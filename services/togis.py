@@ -49,7 +49,7 @@ class ToGisParser:
     async def parse(self, links, chat_id):
         count = 0
         self.browser = await self.firefox.launch(
-            headless = False,
+            headless = True,
             args = [
                 '--no-sandbox',
                 '--disable-gpu',
