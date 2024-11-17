@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import io
+import math
 import re
 from datetime import datetime
 from urllib.parse import unquote, urlparse, parse_qs
@@ -23,22 +24,6 @@ class ToGisParser:
         """
         self.firefox = playwright.firefox
         self.files = []
-
-    async def create_page(self):
-        try:
-            context = await self.browser.new_context(
-                locale = "ru-RU"
-            )
-            page = await context.new_page()
-
-            await page.route(
-                re.compile(r".*\.(jpg|png|jpeg|webp)$"),
-                lambda route: route.abort()
-            )
-            return page
-        except Exception as new_page_error:
-            logger.error(f'ошибка при открытии новой страницы : {new_page_error}')
-            return None
 
     async def parse_url(self, url):
         parsed_url = urlparse(url)
@@ -63,23 +48,36 @@ class ToGisParser:
 
     async def parse(self, links, chat_id):
         count = 0
+        self.browser = await self.firefox.launch(
+            headless = False,
+            args = [
+                '--no-sandbox',
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--single-process',
+
+            ]
+        )
         try:
             for link in links:
-                self.browser = await self.firefox.launch(
-                    headless = True,
-                    args = [
-                        '--no-sandbox',
-                        '--disable-gpu',
-                        '--disable-dev-shm-usage',
-                        '--disable-extensions',
-                        '--disable-plugins',
-                        '--single-process',
-
-                    ]
-                )
+                count += 1
                 data = []
-                page = await self.create_page()
-                if not page:
+
+                try:
+
+                    context = await self.browser.new_context(
+                        locale = "ru-RU"
+                    )
+                    page = await context.new_page()
+
+                    await page.route(
+                        re.compile(r".*\.(jpg|png|jpeg|webp)$"),
+                        lambda route: route.abort()
+                    )
+                except Exception as new_page_error:
+                    logger.error(f'ошибка при открытии новой страницы : {new_page_error}')
                     continue
 
                 try:
@@ -92,11 +90,20 @@ class ToGisParser:
                             await cookie.click()
                     except Exception as e:
                         logger.error(e)
+                        continue
+
+                    try:
+                        pagination_url = await page.query_selector("(//a[@class='_12164l30'])[1]")
+                        pagination_url = await pagination_url.get_attribute('href')
+                    except:
+                        pagination_url = ''
 
                     try:
                         elements_count = await page.query_selector("//span[@class='_1xhlznaa']")
                         elements_count = int(await elements_count.text_content())
+                        total_pages = math.ceil(elements_count / 12)
                     except:
+                        total_pages = 0
                         elements_count = 0
 
                     count_links = len(links)
@@ -111,9 +118,43 @@ class ToGisParser:
                     except:
                         request = ''
 
-                    count += 1
+
                     count_proccess = 0
-                    while True:
+                    if page:
+                        await page.close()
+                        await context.close()
+                    for num in range(1, total_pages + 1):
+                        try:
+                            context = await self.browser.new_context(
+                                locale = "ru-RU"
+                            )
+                            page = await context.new_page()
+
+                            await page.route(
+                                re.compile(r".*\.(jpg|png|jpeg|webp)$"),
+                                lambda route: route.abort()
+                            )
+                        except Exception as new_page_error:
+                            logger.error(f'ошибка при открытии новой страницы : {new_page_error}')
+                            continue
+
+                        try:
+                            new_url = f"https://2gis.ru{pagination_url.rsplit('/', 1)[0] + '/' + str(num)}"
+                        except:
+                            break
+
+                        print(new_url)
+                        print(total_pages)
+
+                        try:
+                            await page.goto(new_url, wait_until = 'domcontentloaded')
+                            await asyncio.sleep(5)
+                            cookie = await page.query_selector("//button[@class='_jro6t0']")
+                            if cookie:
+                                await cookie.click()
+                        except Exception as e:
+                            logger.error(e)
+                            continue
                         organization_elements = await page.query_selector_all(
                             "//div[@class='_1kf6gff']"
                         )
@@ -290,21 +331,13 @@ class ToGisParser:
                                     text = f"Сейчас парсятся организации из запроса\n{link}\n\nВсего организаций найдено: {elements_count}\nВсего организаций уже спарсено: {count_proccess}"
                                 )
                         gc.collect()
-                        next_page = await page.query_selector(
-                            "//html/body/div[2]/div/div/div[1]/div[1]/div[3]/div/div/div[2]/div/div/div/div[2]/div[2]/div[1]/div/div/div/div[3]/div[2]/div[2]"
-                        )
-                        try:
-                            if next_page:
-                                await next_page.click(timeout = 50000)
-                                await asyncio.sleep(2)
-                            else:
-                                break
-                        except Exception as e:
-                            logger.error(e)
-                            break
+                        if page:
+                            await page.close()
+                        await context.close()
                 finally:
-                    await page.close()
-                    await self.browser.close()
+                    if page:
+                        await page.close()
+                    await context.close()
                     await self.save_to_excel(data)
         finally:
             return self.files
